@@ -3,9 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"testing"
+
 	flog "firefly-ec2-drift-detector/logger"
 	"firefly-ec2-drift-detector/models"
-	"testing"
 )
 
 type fakeParser struct {
