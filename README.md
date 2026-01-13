@@ -211,7 +211,7 @@ type DriftService struct {
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/firefly-ec2-drift-detector.git
+git clone https://github.com/tejiriaustin/firefly-ec2-drift-detector.git
 cd firefly-ec2-drift-detector
 
 # Install dependencies
@@ -648,7 +648,7 @@ type AWSClient struct {
 
 ---
 
-## 🔮 Future Improvements
+## 🔮 Future Improvements Recommendations
 
 ### Short-Term Enhancements
 
@@ -744,7 +744,7 @@ Contributions are welcome! Please follow these guidelines:
 
 ```bash
 # Clone your fork
-git clone https://github.com/yourusername/firefly-ec2-drift-detector.git
+git clone https://github.com/tejiriaustin/firefly-ec2-drift-detector.git
 
 # Install dependencies
 go mod download
@@ -761,23 +761,6 @@ golangci-lint run
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **AWS SDK for Go** - Official AWS client library
-- **Cobra** - Powerful CLI framework by spf13
-- **Zap** - Blazing fast structured logging by Uber
-- **Firefly** - For the interesting home assignment
-
----
-
-## 📞 Contact
-
-**Project Maintainer**: Tejiri Odiase  
-**Email**: tejiriaustin123@gmail.com  
-**GitHub**: [@tejiriaustin](https://github.com/tejiriaustin)
 
 ---
 
