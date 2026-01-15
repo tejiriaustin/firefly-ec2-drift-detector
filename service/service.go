@@ -4,18 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
 
+	awspkg "firefly-ec2-drift-detector/aws"
 	flog "firefly-ec2-drift-detector/logger"
 	"firefly-ec2-drift-detector/models"
 )
 
 type StateProvider interface {
 	GetInstanceState(ctx context.Context, instanceID string) (*models.InstanceState, error)
+	GetInstanceStatesBatch(ctx context.Context, instanceIDs []string) (map[string]*models.InstanceState, error)
 }
 
 type StateParser interface {
@@ -52,7 +53,6 @@ func (s *DriftService) DetectDrift(ctx context.Context, tfStatePath string, inst
 		return nil, fmt.Errorf("failed to parse terraform state: %w", err)
 	}
 
-	// Builds instanceID list for multiple instances from terraform file
 	if len(instanceIDs) == 0 {
 		for id := range expectedStates {
 			instanceIDs = append(instanceIDs, id)
@@ -62,15 +62,27 @@ func (s *DriftService) DetectDrift(ctx context.Context, tfStatePath string, inst
 		)
 	}
 
-	reports, err := s.detectDriftConcurrent(ctx, expectedStates, instanceIDs, attrs)
+	var (
+		reports      []*models.DriftReport
+		detectionErr error
+	)
+
+	if len(instanceIDs) > 10 {
+		s.logger.Info("using batch mode for large instance count",
+			zap.Int("instance_count", len(instanceIDs)),
+		)
+		reports, detectionErr = s.detectDriftBatch(ctx, expectedStates, instanceIDs, attrs)
+	} else {
+		reports, detectionErr = s.detectDriftConcurrent(ctx, expectedStates, instanceIDs, attrs)
+	}
 
 	duration := time.Since(startTime)
 
-	if err != nil {
+	if detectionErr != nil {
 		s.logger.Error("drift detection encountered errors",
 			zap.Duration("duration", duration),
+			zap.Error(detectionErr),
 		)
-		return nil, err
 	}
 
 	driftCount := 0
@@ -86,7 +98,54 @@ func (s *DriftService) DetectDrift(ctx context.Context, tfStatePath string, inst
 		zap.Int("instances_with_drift", driftCount),
 	)
 
-	return reports, err
+	return reports, detectionErr
+}
+
+func (s *DriftService) detectDriftBatch(ctx context.Context, expectedStates map[string]*models.InstanceState, instanceIDs []string, attrs []string) ([]*models.DriftReport, error) {
+	s.logger.Info("fetching instances in batch mode",
+		zap.Int("instance_count", len(instanceIDs)),
+	)
+
+	actualStates, err := s.awsProvider.GetInstanceStatesBatch(ctx, instanceIDs)
+	if err != nil {
+		s.logger.Warn("batch fetch encountered errors",
+			zap.Error(err),
+			zap.Int("successful_fetches", len(actualStates)),
+		)
+	}
+
+	reports := make([]*models.DriftReport, 0, len(instanceIDs))
+	var errorMessages []string
+
+	for _, instanceID := range instanceIDs {
+		expected, existsInExpected := expectedStates[instanceID]
+		if !existsInExpected {
+			s.logger.Warn("instance not in terraform state",
+				zap.String("instance_id", instanceID),
+			)
+			errorMessages = append(errorMessages, fmt.Sprintf("instance %s not in terraform state", instanceID))
+			continue
+		}
+
+		actual, existsInActual := actualStates[instanceID]
+		if !existsInActual {
+			s.logger.Warn("instance not fetched from AWS",
+				zap.String("instance_id", instanceID),
+			)
+			errorMessages = append(errorMessages, fmt.Sprintf("instance %s not found in AWS", instanceID))
+			continue
+		}
+
+		report := s.comparator.CompareAttributes(expected, actual, attrs)
+		reports = append(reports, report)
+	}
+
+	if len(errorMessages) > 0 {
+		summary := fmt.Sprintf("%d instance(s) failed", len(errorMessages))
+		return reports, errors.New(summary)
+	}
+
+	return reports, nil
 }
 
 func (s *DriftService) detectDriftConcurrent(ctx context.Context, expectedStates map[string]*models.InstanceState, instanceIDs []string, attrs []string) ([]*models.DriftReport, error) {
@@ -120,7 +179,12 @@ func (s *DriftService) detectDriftConcurrent(ctx context.Context, expectedStates
 
 			actual, err := s.awsProvider.GetInstanceState(ctx, id)
 			if err != nil {
-				// Error already logged in EC2StateProvider, don't duplicate
+				if awspkg.IsAuthError(err) {
+					s.logger.Error("authentication error - check AWS credentials",
+						zap.String("instance_id", id),
+						zap.Error(err),
+					)
+				}
 				results <- result{err: err}
 				return
 			}
@@ -137,9 +201,13 @@ func (s *DriftService) detectDriftConcurrent(ctx context.Context, expectedStates
 
 	reports := make([]*models.DriftReport, 0, len(instanceIDs))
 	var errorMessages []string
+	var authErrors int
 
 	for res := range results {
 		if res.err != nil {
+			if awspkg.IsAuthError(res.err) {
+				authErrors++
+			}
 			errorMessages = append(errorMessages, res.err.Error())
 		} else {
 			reports = append(reports, res.report)
@@ -150,12 +218,14 @@ func (s *DriftService) detectDriftConcurrent(ctx context.Context, expectedStates
 		s.logger.Warn("some instances could not be checked",
 			zap.Int("error_count", len(errorMessages)),
 			zap.Int("success_count", len(reports)),
+			zap.Int("auth_errors", authErrors),
 		)
 
-		// Create a cleaner aggregated error message
 		summary := fmt.Sprintf("%d instance(s) failed", len(errorMessages))
 		if len(errorMessages) == 1 {
 			summary = errorMessages[0]
+		} else if authErrors > 0 {
+			summary = fmt.Sprintf("%d instance(s) failed (%d authentication errors)", len(errorMessages), authErrors)
 		}
 
 		return reports, errors.New(summary)
@@ -189,11 +259,4 @@ func (s *DriftService) DetectSingleDrift(ctx context.Context, tfStatePath, insta
 	}
 
 	return s.comparator.CompareAttributes(expected, actual, attrs), nil
-}
-
-// Helper function to detect AWS auth errors
-func isAuthError(err error) bool {
-	errStr := err.Error()
-	return strings.Contains(errStr, "AuthFailure") ||
-		strings.Contains(errStr, "validate the provided access credentials")
 }

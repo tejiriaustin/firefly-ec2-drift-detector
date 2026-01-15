@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -12,15 +14,47 @@ import (
 )
 
 type TerraformClient struct {
-	_      struct{}
-	logger *flog.Logger
+	_         struct{}
+	logger    *flog.Logger
+	hclParser *HCLParser
 }
 
 func NewTerraformClient(logger *flog.Logger) *TerraformClient {
-	return &TerraformClient{logger: logger}
+	return &TerraformClient{
+		logger:    logger,
+		hclParser: NewHCLParser(logger),
+	}
 }
 
-func (p *TerraformClient) ParseStateFile(filepath string) (map[string]*models.InstanceState, error) {
+func (p *TerraformClient) ParseStateFile(path string) (map[string]*models.InstanceState, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to access path: %w", err)
+	}
+
+	if info.IsDir() {
+		p.logger.Info("detected directory, parsing HCL files",
+			zap.String("path", path),
+		)
+		return p.hclParser.ParseHCLDirectory(path)
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+
+	if ext == ".tf" {
+		p.logger.Info("detected HCL file, parsing with HCL parser",
+			zap.String("filepath", path),
+		)
+		return p.hclParser.ParseHCLFile(path)
+	}
+
+	p.logger.Info("parsing as JSON terraform state file",
+		zap.String("filepath", path),
+	)
+	return p.parseJSONStateFile(path)
+}
+
+func (p *TerraformClient) parseJSONStateFile(filepath string) (map[string]*models.InstanceState, error) {
 	p.logger.Info("parsing terraform state file",
 		zap.String("filepath", filepath),
 	)

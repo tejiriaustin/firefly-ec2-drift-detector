@@ -350,24 +350,28 @@ func TestEC2StateProvider_GetInstanceState_InstanceNotFound(t *testing.T) {
 
 func TestEC2StateProvider_GetInstanceState_APIError(t *testing.T) {
 	tests := []struct {
-		name       string
-		instanceID string
-		mockError  error
+		name          string
+		instanceID    string
+		mockError     error
+		expectedInErr string // What we expect to find in the error message
 	}{
 		{
-			name:       "aws api error",
-			instanceID: "i-error123",
-			mockError:  errors.New("AWS API error: rate limit exceeded"),
+			name:          "aws api error",
+			instanceID:    "i-error123",
+			mockError:     errors.New("AWS API error: rate limit exceeded"),
+			expectedInErr: "i-error123", // Should contain instance ID
 		},
 		{
-			name:       "network error",
-			instanceID: "i-network456",
-			mockError:  errors.New("connection timeout"),
+			name:          "network error",
+			instanceID:    "i-network456",
+			mockError:     errors.New("connection timeout"),
+			expectedInErr: "i-network456", // Should contain instance ID
 		},
 		{
-			name:       "authentication error",
-			instanceID: "i-auth789",
-			mockError:  errors.New("authentication failed"),
+			name:          "authentication error",
+			instanceID:    "i-auth789",
+			mockError:     errors.New("authentication failed"),
+			expectedInErr: "i-auth789", // Should contain instance ID
 		},
 	}
 
@@ -393,14 +397,19 @@ func TestEC2StateProvider_GetInstanceState_APIError(t *testing.T) {
 				t.Errorf("Expected state to be nil, got %v", state)
 			}
 
-			expectedError := "AWS API error"
-			if !contains(err.Error(), expectedError) {
-				t.Errorf("Expected error to contain '%s', got: %v", expectedError, err)
+			// Check that error contains instance ID
+			if !contains(err.Error(), tt.expectedInErr) {
+				t.Errorf("Expected error to contain '%s', got: %v", tt.expectedInErr, err)
+			}
+
+			// Verify it's an EC2Error
+			var ec2Err *EC2Error
+			if !errors.As(err, &ec2Err) {
+				t.Errorf("Expected EC2Error type, got: %T", err)
 			}
 		})
 	}
 }
-
 func TestEC2StateProvider_ExtractSecurityGroups(t *testing.T) {
 	tests := []struct {
 		name     string
